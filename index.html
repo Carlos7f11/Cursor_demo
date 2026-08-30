@@ -1,0 +1,1419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>夜巷灯笼跑者</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #0B1020;
+      overflow: hidden;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="960" height="540"></canvas>
+  <script>
+    // ========== PALETTE：画面只用这里的颜色 ==========
+    const PALETTE = {
+      sky: '#0B1020',     // 夜空。调亮会不像夜；调暗则平台更难认
+      neon: '#2EE6D6',    // 霓虹青。招牌、终点、提示字。用多了会花
+      lantern: '#FF7A3D', // 灯笼橙。斗笠、收集物。画面里的热色
+      tile: '#3D4A5C',    // 瓦顶青灰。平台与地面。调亮落脚点更清楚；调暗会融进夜空
+      fur: '#C48A5A'      // 狸毛暖褐。主角。调亮角色更跳；调暗会融进夜空
+    };
+
+    // ========== CONFIG：所有手感数字集中在这里 ==========
+    const CONFIG = {
+      moveSpeed: 500,     // 水平速度（像素/秒）。调大跑得更快，调小更稳更慢
+ 
+      gravity: 2200,      // 重力加速度（像素/秒²）。调大掉得更快、跳跃更短促；调小会变飘
+      jumpSpeed: -780,    // 跳跃初速（像素/秒）。y 轴向下为正所以是负值；绝对值调大跳得更高
+      floorHeight: 64,    // 地板厚度（像素）。调大地板更厚、可站立区域上移
+      maxDt: 1 / 30,      // 单帧时间上限（秒）。调大卡顿后会瞬移，调小极端卡顿时会感觉「慢放」
+      worldWidth: 6400,   // 关卡总宽（像素）。调大向右跑更久；调小很快到头
+      cameraLerp: 8,      // 相机水平跟随速度。调大跟得更紧（几乎无延迟）；调小更飘、有拖影
+      parallax: 0.28,     // 远景随相机移动的比例。调大视差变弱（远景跟得快）；调小视差更强（远景几乎不动）
+      coyoteTime: 0.08,   // 离开平台后仍可起跳的宽限（秒）。调大边缘容错更大；调小必须踩实才跳
+      jumpBuffer: 0.1,    // 落地前预按空格的有效窗口（秒）。调大提前按更容易接上；调小必须卡得更准
+      squashAmount: 0.22, // 落地挤压幅度（相对高度）。调大压得更扁；调小几乎看不出
+      squashRecover: 12,  // 挤压恢复速度。调大弹回更快；调小压扁持续更久
+      dustCount: 5,       // 每次落地粒子数。调多更热闹；调少更干净
+      dustLife: 0.28,     // 粒子寿命（秒）。调大飘更久；调小一闪就没
+      fallY: 640,         // 掉出这个世界 y 就重生。调大掉得更远才重置；调小刚出屏就重生
+      chargeTime: 0.55,   // 蓄满 K 所需秒。调大更难满；调小一点就满
+      chargeRadiusMin: 52,// 点按 K 的刃长。调大弱斩也更远
+      chargeRadiusMax: 110,// 蓄满 K 的刃长。调大覆盖更宽
+      chargeDamageMin: 1, // 点按 K 伤害
+      chargeDamageMax: 3, // 蓄满 K 伤害
+      ultDuration: 0.78,  // 必杀总时长（秒）
+      ultCooldown: 0,     // 必杀冷却（秒）。0=动画结束就能再放
+      hitstopHit: 0.045,  // 命中顿帧。调大更「肉」；调大过头会黏
+      comboLockMove: 0.35,// 挥刀时水平速度乘数。0=锁步，1=完全能跑
+      monsterSpeed: 72,   // 怪物巡逻速度。调大更难绕开；调小更好预判
+      monsterAggroRange: 150, // 玩家进入此距离后怪物停止闲逛并扑击。调大更早开打
+      monsterLungeSpeed: 240, // 扑击水平速度。调大冲得更快更狠
+      monsterAttackDuration: 0.26, // 单次扑击持续时间。调大冲得更远
+      monsterAttackCooldown: 0.7,  // 扑击后的收招。调大更好反击；调小会连扑
+      playerMaxHits: 3,   // 挨几下回出生点。调大更耐打
+      knockbackX: 320,    // 受击水平击退速度。调大推得更远
+      knockbackY: -340,   // 受击上弹速度。绝对值调大弹得更高
+      iFrameDuration: 0.75, // 无敌时间（秒）。调大受击后更安全
+      knockbackDecay: 9   // 击退速度回收。调大很快停住；调小会滑得更远
+    };
+
+    const VIEW_W = 960;
+    const VIEW_H = 540;
+
+    // ========== 画布 ==========
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // 保持 960×540，按窗口等比缩放，四周用夜空信箱黑边
+    function fitCanvas() {
+      const aspect = VIEW_W / VIEW_H;
+      let w = window.innerWidth;
+      let h = w / aspect;
+      if (h > window.innerHeight) {
+        h = window.innerHeight;
+        w = h * aspect;
+      }
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+    }
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
+
+    // ========== 输入：只记录「当前是否按着」==========
+    const keys = {
+      left: false,
+      right: false,
+      jump: false,
+      slash: false,
+      charge: false,
+      ult: false
+    };
+    // 边沿：只在「这一帧刚按下 / 刚松开」时为 true
+    let jumpPressed = false;
+    let slashPressed = false;
+    let chargeReleased = false;
+    let ultPressed = false;
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+      if (e.code === 'Space') {
+        if (!keys.jump) jumpPressed = true;
+        keys.jump = true;
+      }
+      if (e.code === 'KeyJ') {
+        if (!keys.slash) slashPressed = true;
+        keys.slash = true;
+      }
+      if (e.code === 'KeyK') keys.charge = true;
+      if (e.code === 'KeyL') {
+        if (!keys.ult) ultPressed = true;
+        keys.ult = true;
+      }
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Space' ||
+          e.code === 'KeyJ' || e.code === 'KeyK' || e.code === 'KeyL') {
+        e.preventDefault();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+      if (e.code === 'Space') keys.jump = false;
+      if (e.code === 'KeyJ') keys.slash = false;
+      if (e.code === 'KeyK') {
+        keys.charge = false;
+        chargeReleased = true;
+      }
+      if (e.code === 'KeyL') keys.ult = false;
+    });
+
+    // ========== 关卡：出生点、平台、灯笼、终点（世界坐标）==========
+    const SPAWN = { x: 80, y: 428 };
+
+    const player = {
+      x: SPAWN.x,
+      y: SPAWN.y,
+      w: 36,
+      h: 48,
+      vy: 0,
+      onGround: false
+    };
+
+    const camera = { x: 0 };
+    const floorY = VIEW_H - CONFIG.floorHeight;
+
+    // 地面留缺口；后半段屋顶更窄、空档更大，路线上会有巡逻怪
+    const platforms = [
+      { x: 0, y: floorY, w: 820, h: CONFIG.floorHeight },
+      { x: 160, y: 400, w: 140, h: 24 },
+      { x: 360, y: 344, w: 110, h: 24 },
+      { x: 530, y: 300, w: 40, h: floorY - 300 },
+      { x: 610, y: 368, w: 150, h: 24 },
+      { x: 1020, y: 400, w: 120, h: 24 },
+      { x: 1260, y: 328, w: 130, h: 24 },
+      { x: 1500, y: 268, w: 100, h: 24 },
+      { x: 1720, y: floorY, w: 480, h: CONFIG.floorHeight },
+      { x: 1800, y: 372, w: 150, h: 24 },
+      { x: 2040, y: 304, w: 120, h: 24 },
+      { x: 2320, y: 396, w: 130, h: 24 },
+      { x: 2560, y: 324, w: 110, h: 24 },
+      { x: 2890, y: 258, w: 90, h: 24 },
+      { x: 3120, y: 348, w: 140, h: 24 },
+      { x: 3360, y: 286, w: 108, h: 24 },
+      { x: 3580, y: floorY, w: 360, h: CONFIG.floorHeight },
+      { x: 3660, y: 384, w: 130, h: 24 },
+      { x: 3880, y: 308, w: 140, h: 24 },
+      { x: 4140, y: 368, w: 110, h: 24 },
+      { x: 4360, y: 304, w: 130, h: 24 },
+      { x: 4600, y: floorY, w: 200, h: CONFIG.floorHeight },
+      { x: 4640, y: 384, w: 140, h: 24 },
+      { x: 4800, y: floorY, w: 1600, h: CONFIG.floorHeight },
+      { x: 5200, y: 360, w: 180, h: 24 },
+      { x: 5600, y: 360, w: 180, h: 24 }
+    ];
+
+    const lanterns = [
+      { x: 210, y: 364, w: 16, h: 22, collected: false },
+      { x: 542, y: 268, w: 16, h: 22, collected: false },
+      { x: 1304, y: 296, w: 16, h: 22, collected: false },
+      { x: 2084, y: 272, w: 16, h: 22, collected: false },
+      { x: 2920, y: 226, w: 16, h: 22, collected: false },
+      { x: 3928, y: 276, w: 16, h: 22, collected: false }
+    ];
+
+    const goal = { x: 6280, y: floorY - 96, w: 56, h: 96 };
+
+    // 远景霓虹窗与招牌（世界 x，绘制时乘视差）
+    const farWindows = [
+      { x: 160, y: 64, w: 8, h: 14 },
+      { x: 184, y: 72, w: 6, h: 10 },
+      { x: 210, y: 58, w: 10, h: 16 },
+      { x: 248, y: 70, w: 7, h: 12 },
+      { x: 420, y: 66, w: 8, h: 14 },
+      { x: 448, y: 74, w: 6, h: 10 },
+      { x: 1100, y: 60, w: 9, h: 15 },
+      { x: 1130, y: 72, w: 6, h: 11 },
+      { x: 1860, y: 64, w: 8, h: 14 },
+      { x: 2480, y: 68, w: 8, h: 13 },
+      { x: 2510, y: 74, w: 6, h: 10 },
+      { x: 3180, y: 62, w: 9, h: 15 },
+      { x: 3920, y: 70, w: 7, h: 12 },
+      { x: 4360, y: 64, w: 8, h: 14 },
+      { x: 5200, y: 66, w: 8, h: 14 },
+      { x: 5480, y: 72, w: 6, h: 10 },
+      { x: 5860, y: 64, w: 9, h: 15 }
+    ];
+    const farSigns = [
+      { x: 300, y: 48, w: 40, h: 8 },
+      { x: 1240, y: 52, w: 28, h: 7 },
+      { x: 2680, y: 50, w: 36, h: 8 },
+      { x: 4040, y: 54, w: 30, h: 7 }
+    ];
+
+    // 小兵与玩家碰撞盒同级；种类只靠颜色/零件区分
+    const ENEMY_BODY = {
+      rat: { w: 34, h: 42 },
+      spirit: { w: 32, h: 44 },
+      boss: { w: 56, h: 72 }
+    };
+
+    // 巷鼠 / 灯笼精 / BOSS：钉在平台 y 上，只左右巡逻，不另算重力
+    function makeEnemy(kind, platX, platY, platW, pad, startX) {
+      const inset = pad == null ? 8 : pad;
+      const body = ENEMY_BODY[kind];
+      const w = body.w;
+      const h = body.h;
+      const patrolMin = platX + inset;
+      const patrolMax = Math.max(patrolMin, platX + platW - w - inset);
+      let x = startX == null ? patrolMin : startX;
+      if (x < patrolMin) x = patrolMin;
+      if (x > patrolMax) x = patrolMax;
+      return {
+        kind: kind,
+        x: x,
+        y: platY - h,
+        w: w,
+        h: h,
+        vx: CONFIG.monsterSpeed,
+        patrolMin: patrolMin,
+        patrolMax: patrolMax,
+        hp: kind === 'spirit' ? 2 : 1
+      };
+    }
+
+    function makeBoss(platX, platY, platW, startX) {
+      const body = ENEMY_BODY.boss;
+      const w = body.w;
+      const h = body.h;
+      const inset = 24;
+      const patrolMin = platX + inset;
+      const patrolMax = Math.max(patrolMin, platX + platW - w - inset);
+      let x = startX == null ? platX + platW * 0.5 - w * 0.5 : startX;
+      if (x < patrolMin) x = patrolMin;
+      if (x > patrolMax) x = patrolMax;
+      return {
+        kind: 'boss',
+        x: x,
+        y: platY - h,
+        w: w,
+        h: h,
+        vx: CONFIG.monsterSpeed * 0.7,
+        patrolMin: patrolMin,
+        patrolMax: patrolMax,
+        hp: 14
+      };
+    }
+
+    const enemies = [];
+
+    function spawnEnemies() {
+      enemies.length = 0;
+      const defs = [
+        // 开场路面：一小队 + 一只 BOSS（出生点右侧留空）
+        makeEnemy('rat', 0, floorY, 820, 12, 260),
+        makeEnemy('rat', 0, floorY, 820, 12, 320),
+        makeEnemy('rat', 0, floorY, 820, 12, 380),
+        makeEnemy('spirit', 0, floorY, 820, 12, 500),
+        makeEnemy('rat', 0, floorY, 820, 12, 560),
+        makeBoss(0, floorY, 820, 680),
+        // 屋顶据点
+        makeEnemy('rat', 610, 368, 150),
+        makeEnemy('rat', 1260, 328, 130),
+        makeEnemy('rat', 2040, 304, 120),
+        makeEnemy('spirit', 3120, 348, 140),
+        makeEnemy('rat', 3660, 384, 130),
+        makeEnemy('spirit', 4640, 384, 140),
+        // 中段路面
+        makeEnemy('rat', 1720, floorY, 480, 12, 1760),
+        makeEnemy('rat', 1720, floorY, 480, 12, 1820),
+        makeEnemy('spirit', 1720, floorY, 480, 12, 1880),
+        makeEnemy('rat', 1720, floorY, 480, 12, 1960),
+        makeBoss(1720, floorY, 480, 2040),
+        // 后段路面
+        makeEnemy('rat', 3580, floorY, 360, 12, 3610),
+        makeEnemy('spirit', 3580, floorY, 360, 12, 3680),
+        makeEnemy('rat', 3580, floorY, 360, 12, 3760),
+        makeBoss(3580, floorY, 360, 3840),
+        // 衔接短地面
+        makeEnemy('rat', 4600, floorY, 200, 8, 4620),
+        makeBoss(4600, floorY, 200, 4700),
+        // 长台：成群 + 多只 BOSS
+        makeEnemy('rat', 4800, floorY, 1600, 16, 4860),
+        makeEnemy('rat', 4800, floorY, 1600, 16, 4920),
+        makeEnemy('spirit', 4800, floorY, 1600, 16, 4980),
+        makeEnemy('rat', 4800, floorY, 1600, 16, 5040),
+        makeBoss(4800, floorY, 1600, 5120),
+        makeEnemy('rat', 4800, floorY, 1600, 16, 5280),
+        makeEnemy('spirit', 4800, floorY, 1600, 16, 5360),
+        makeBoss(4800, floorY, 1600, 5480),
+        makeEnemy('rat', 4800, floorY, 1600, 16, 5620),
+        makeEnemy('rat', 4800, floorY, 1600, 16, 5680),
+        makeBoss(4800, floorY, 1600, 5820),
+        makeEnemy('spirit', 4800, floorY, 1600, 16, 5960),
+        makeBoss(4800, floorY, 1600, 6100)
+      ];
+      for (let i = 0; i < defs.length; i++) {
+        const d = defs[i];
+        enemies.push({
+          kind: d.kind,
+          x: d.x,
+          y: d.y,
+          w: d.w,
+          h: d.h,
+          vx: (i % 2 === 0 ? 1 : -1) * Math.abs(d.vx),
+          patrolMin: d.patrolMin,
+          patrolMax: d.patrolMax,
+          state: 'patrol',
+          attackTimer: 0,
+          hp: d.hp,
+          hitToken: -1,
+          flashT: 0,
+          kbX: 0
+        });
+      }
+      // #region agent log
+      (function () {
+        let bosses = 0;
+        let startMinX = 1e9;
+        let startTowardSpawn = 0;
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i];
+          if (e.kind === 'boss') bosses += 1;
+          if (e.x < 820 && e.y >= floorY - 80) {
+            if (e.x < startMinX) startMinX = e.x;
+            if (e.vx < 0) startTowardSpawn += 1;
+          }
+        }
+        fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'B',location:'index.html:spawnEnemies',message:'spawn snapshot',data:{count:enemies.length,bosses:bosses,startMinX:startMinX,startTowardSpawn:startTowardSpawn,spawnX:SPAWN.x},timestamp:Date.now()})}).catch(function(){});
+      })();
+      // #endregion
+    }
+
+    // ========== 画面 / 手感状态 ==========
+    let gameState = 'title'; // title | play | win
+    let facing = 1;
+    let coyoteTimer = 0;
+    let jumpBufferTimer = 0;
+    let squash = 0;
+    let hitsTaken = 0;
+    let iFrameTimer = 0;
+    let knockbackVx = 0;
+    const particles = [];
+    const vfx = [];
+    const screenFx = { flash: 0, vignette: 0 };
+
+    // 一次只处于一种 mode；attackId 保证同一段不重复打同一只
+    const combat = {
+      mode: 'idle',
+      comboIndex: 0,
+      phase: 'idle',
+      phaseT: 0,
+      windowT: 0,
+      charge: 0,
+      attackId: 0,
+      hitstop: 0,
+      ultT: 0,
+      ultStep: 0,
+      kDesc: null,
+      cooldownK: 0,
+      cooldownL: 0
+    };
+
+    const COMBO = [
+      { duration: 0.10, recover: 0.09, window: 0.26, dash: 90,  damage: 1, radius: 58, height: 28, yAlign: 0.38, a0: -0.35, a1: 0.55, thick: 9,  knock: 140 },
+      { duration: 0.12, recover: 0.10, window: 0.28, dash: 50,  damage: 1, radius: 64, height: 36, yAlign: 0.22, a0:  0.25, a1: 1.35, thick: 8,  knock: 90 },
+      { duration: 0.16, recover: 0.34, window: 0,    dash: 150, damage: 2, radius: 74, height: 40, yAlign: 0.18, a0: -1.15, a1: 0.25, thick: 13, knock: 280 }
+    ];
+
+    const ULT_SLICES = [
+      { delay: 0.00, a0: -1.1, a1: 0.2, radius: 130, damage: 2 },
+      { delay: 0.14, a0:  0.2, a1: 1.5, radius: 140, damage: 2 },
+      { delay: 0.28, a0: -0.9, a1: 0.9, radius: 150, damage: 2 },
+      { delay: 0.44, a0: -1.4, a1: 1.4, radius: 168, damage: 3 }
+    ];
+
+    function overlaps(a, b) {
+      return a.x < b.x + b.w &&
+             a.x + a.w > b.x &&
+             a.y < b.y + b.h &&
+             a.y + a.h > b.y;
+    }
+
+    function mixColor(hexA, hexB, t) {
+      const a = parseInt(hexA.slice(1), 16);
+      const b = parseInt(hexB.slice(1), 16);
+      const r = Math.round((a >> 16) * (1 - t) + (b >> 16) * t);
+      const g = Math.round(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t);
+      const bl = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+      return '#' + (0x1000000 | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+    }
+
+    function lanternsLeft() {
+      let n = 0;
+      for (let i = 0; i < lanterns.length; i++) {
+        if (!lanterns[i].collected) n++;
+      }
+      return n;
+    }
+
+    function makeHitBox(desc) {
+      const w = desc.radius;
+      const h = desc.height;
+      const y = player.y + (player.h - h) * desc.yAlign;
+      if (facing >= 0) {
+        return { x: player.x + player.w - 4, y: y, w: w, h: h };
+      }
+      return { x: player.x - w + 4, y: y, w: w, h: h };
+    }
+
+    function currentSlashDesc() {
+      if (combat.phase !== 'active') return null;
+      if (combat.mode === 'combo') return COMBO[combat.comboIndex];
+      if (combat.mode === 'slashK' || combat.mode === 'ult') return combat.kDesc;
+      return null;
+    }
+
+    function resetCombat() {
+      combat.mode = 'idle';
+      combat.comboIndex = 0;
+      combat.phase = 'idle';
+      combat.phaseT = 0;
+      combat.windowT = 0;
+      combat.charge = 0;
+      combat.attackId = 0;
+      combat.hitstop = 0;
+      combat.ultT = 0;
+      combat.ultStep = 0;
+      combat.kDesc = null;
+      combat.cooldownK = 0;
+      combat.cooldownL = 0;
+    }
+
+    function spawnBlade(desc) {
+      const ox = player.x + player.w * 0.5 + facing * 10;
+      const oy = player.y + player.h * 0.42;
+      vfx.push({
+        type: 'blade',
+        life: desc.duration + 0.06,
+        maxLife: desc.duration + 0.06,
+        ox: ox,
+        oy: oy,
+        facing: facing,
+        r0: desc.radius * 0.82,
+        r1: desc.radius * 1.04,
+        a0: desc.a0,
+        a1: desc.a1,
+        thick: desc.thick,
+        ghost: false
+      });
+      vfx.push({
+        type: 'blade',
+        life: 0.12,
+        maxLife: 0.12,
+        ox: ox - facing * 10,
+        oy: oy,
+        facing: facing,
+        r0: desc.radius * 0.78,
+        r1: desc.radius * 0.96,
+        a0: desc.a0,
+        a1: desc.a1,
+        thick: desc.thick * 0.7,
+        ghost: true
+      });
+    }
+
+    function spawnGhost() {
+      vfx.push({
+        type: 'ghost',
+        life: 0.14,
+        maxLife: 0.14,
+        x: player.x,
+        y: player.y,
+        facing: facing,
+        squash: squash
+      });
+    }
+
+    function updateVfx(dt) {
+      for (let i = vfx.length - 1; i >= 0; i--) {
+        vfx[i].life -= dt;
+        if (vfx[i].life <= 0) vfx.splice(i, 1);
+      }
+    }
+
+    function beginStrike(index) {
+      const d = COMBO[index];
+      combat.mode = 'combo';
+      combat.comboIndex = index;
+      combat.phase = 'active';
+      combat.phaseT = d.duration;
+      combat.windowT = 0;
+      combat.attackId += 1;
+      knockbackVx += facing * d.dash;
+      spawnBlade(d);
+      spawnGhost();
+    }
+
+    function fireChargedSlash(p) {
+      const radius = CONFIG.chargeRadiusMin + (CONFIG.chargeRadiusMax - CONFIG.chargeRadiusMin) * p;
+      const damage = CONFIG.chargeDamageMin + Math.round((CONFIG.chargeDamageMax - CONFIG.chargeDamageMin) * p);
+      const desc = {
+        duration: 0.14 + 0.08 * p,
+        radius: radius,
+        height: 34 + 16 * p,
+        yAlign: 0.3,
+        a0: -0.7 - 0.4 * p,
+        a1: 0.7 + 0.4 * p,
+        thick: 10 + 8 * p,
+        damage: damage,
+        knock: 200 + 200 * p
+      };
+      combat.mode = 'slashK';
+      combat.phase = 'active';
+      combat.phaseT = desc.duration;
+      combat.attackId += 1;
+      combat.kDesc = desc;
+      combat.cooldownK = 0.5;
+      knockbackVx += facing * (60 + 80 * p);
+      spawnBlade(desc);
+    }
+
+    function beginUlt() {
+      if (combat.mode === 'ult' || combat.cooldownL > 0) {
+        // #region agent log
+        fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'E',location:'index.html:beginUlt',message:'ult rejected',data:{mode:combat.mode,cooldownL:combat.cooldownL,hitstop:combat.hitstop},timestamp:Date.now()})}).catch(function(){});
+        // #endregion
+        return;
+      }
+      combat.charge = 0;
+      combat.mode = 'ult';
+      combat.ultT = 0;
+      combat.ultStep = 0;
+      combat.phase = 'idle';
+      combat.phaseT = 0;
+      combat.cooldownL = CONFIG.ultCooldown;
+      screenFx.flash = 1;
+      screenFx.vignette = 0.72;
+    }
+
+    function tickUlt(dt) {
+      if (combat.mode !== 'ult') return;
+      combat.ultT += dt;
+      if (combat.phase === 'active') {
+        combat.phaseT -= dt;
+        if (combat.phaseT <= 0) combat.phase = 'idle';
+      }
+      while (combat.ultStep < ULT_SLICES.length &&
+             combat.ultT >= ULT_SLICES[combat.ultStep].delay) {
+        const s = ULT_SLICES[combat.ultStep];
+        combat.ultStep += 1;
+        combat.attackId += 1;
+        combat.kDesc = {
+          duration: 0.11,
+          radius: s.radius,
+          height: 56,
+          yAlign: 0.15,
+          a0: s.a0,
+          a1: s.a1,
+          thick: 16,
+          damage: s.damage,
+          knock: 120
+        };
+        combat.phase = 'active';
+        combat.phaseT = 0.11;
+        spawnBlade(combat.kDesc);
+        spawnGhost();
+      }
+      if (combat.ultT >= CONFIG.ultDuration) {
+        combat.mode = 'idle';
+        combat.phase = 'idle';
+        combat.kDesc = null;
+      }
+    }
+
+    function tickCombat(dt) {
+      if (combat.cooldownK > 0) combat.cooldownK -= dt;
+      if (combat.cooldownL > 0) combat.cooldownL -= dt;
+
+      if (combat.mode === 'combo') {
+        const d = COMBO[combat.comboIndex];
+        combat.phaseT -= dt;
+        if (combat.phase === 'active' && combat.phaseT <= 0) {
+          combat.phase = 'recover';
+          combat.phaseT = d.recover;
+          combat.windowT = d.window;
+        } else if (combat.phase === 'recover' && combat.phaseT <= 0 && combat.windowT <= 0) {
+          combat.mode = 'idle';
+        }
+        if (combat.windowT > 0) combat.windowT -= dt;
+      } else if (combat.mode === 'slashK') {
+        combat.phaseT -= dt;
+        if (combat.phaseT <= 0) {
+          combat.mode = 'idle';
+          combat.phase = 'idle';
+          combat.kDesc = null;
+        }
+      } else if (combat.mode === 'charging') {
+        combat.charge = Math.min(1, combat.charge + dt / CONFIG.chargeTime);
+        if (chargeReleased) {
+          fireChargedSlash(combat.charge);
+          combat.charge = 0;
+        }
+      }
+
+      tickUlt(dt);
+
+      if (slashPressed) {
+        if (combat.mode === 'idle') beginStrike(0);
+        else if (combat.mode === 'combo' && combat.phase === 'recover' &&
+                 combat.windowT > 0 && combat.comboIndex < 2) {
+          beginStrike(combat.comboIndex + 1);
+        }
+      }
+
+      if (keys.charge && combat.mode === 'idle' && combat.cooldownK <= 0) {
+        combat.mode = 'charging';
+        combat.charge = 0;
+      }
+
+      if (ultPressed) beginUlt();
+    }
+
+    function enemyDist(e) {
+      const dx = e.x + e.w * 0.5 - (player.x + player.w * 0.5);
+      const dy = e.y + e.h * 0.5 - (player.y + player.h * 0.5);
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function resetRun(resetLanterns) {
+      player.x = SPAWN.x;
+      player.y = SPAWN.y;
+      player.vy = 0;
+      player.onGround = false;
+      facing = 1;
+      coyoteTimer = 0;
+      jumpBufferTimer = 0;
+      squash = 0;
+      hitsTaken = 0;
+      iFrameTimer = 0;
+      knockbackVx = 0;
+      camera.x = 0;
+      particles.length = 0;
+      vfx.length = 0;
+      screenFx.flash = 0;
+      screenFx.vignette = 0;
+      resetCombat();
+      spawnEnemies();
+      // 掉落或挨满伤害：resetLanterns=false，保留已收集灯笼
+      // 标题 / 通关重开：resetLanterns=true，灯笼全部还回
+      if (resetLanterns) {
+        for (let i = 0; i < lanterns.length; i++) lanterns[i].collected = false;
+      }
+    }
+
+    function tryJump() {
+      const canJump = player.onGround || coyoteTimer > 0;
+      if (jumpBufferTimer > 0 && canJump) {
+        player.vy = CONFIG.jumpSpeed;
+        player.onGround = false;
+        coyoteTimer = 0;
+        jumpBufferTimer = 0;
+        return true;
+      }
+      return false;
+    }
+
+    function spawnDust(px, py) {
+      for (let i = 0; i < CONFIG.dustCount; i++) {
+        particles.push({
+          x: px + (Math.random() - 0.5) * player.w,
+          y: py,
+          vx: (Math.random() - 0.5) * 90,
+          vy: -30 - Math.random() * 50,
+          life: CONFIG.dustLife
+        });
+      }
+    }
+
+    function updateParticles(dt) {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.life -= dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function updateCamera(dt) {
+      const target = player.x + player.w * 0.5 - VIEW_W * 0.5;
+      const maxCam = Math.max(0, CONFIG.worldWidth - VIEW_W);
+      const clamped = Math.max(0, Math.min(maxCam, target));
+      // 指数平滑，不同刷新率手感接近；只跟 x，y 永远不动
+      const t = 1 - Math.exp(-CONFIG.cameraLerp * dt);
+      camera.x += (clamped - camera.x) * t;
+    }
+
+    function updateEnemies(dt) {
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.flashT > 0) e.flashT -= dt;
+        if (e.state === 'patrol' && enemyDist(e) < CONFIG.monsterAggroRange) {
+          e.state = 'attack';
+          e.attackTimer = CONFIG.monsterAttackDuration;
+          const toward = (player.x + player.w * 0.5) < (e.x + e.w * 0.5) ? -1 : 1;
+          e.vx = toward * CONFIG.monsterLungeSpeed;
+        }
+
+        e.x += e.vx * dt + e.kbX * dt;
+        e.kbX += (0 - e.kbX) * Math.min(1, 8 * dt);
+        const slack = e.state === 'attack' ? 16 : 0;
+        if (e.x < e.patrolMin - slack) {
+          e.x = e.patrolMin - slack;
+          e.vx = Math.abs(e.vx);
+        }
+        if (e.x > e.patrolMax + slack) {
+          e.x = e.patrolMax + slack;
+          e.vx = -Math.abs(e.vx);
+        }
+
+        if (e.state === 'attack') {
+          e.attackTimer -= dt;
+          if (e.attackTimer <= 0) {
+            e.state = 'recover';
+            e.attackTimer = CONFIG.monsterAttackCooldown;
+            e.vx = (e.vx >= 0 ? 1 : -1) * CONFIG.monsterSpeed;
+          }
+        } else if (e.state === 'recover') {
+          e.attackTimer -= dt;
+          if (e.attackTimer <= 0) e.state = 'patrol';
+        }
+      }
+    }
+
+    function resolveAttackHits() {
+      const desc = currentSlashDesc();
+      if (!desc) return;
+      const box = makeHitBox(desc);
+      let any = false;
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        if (e.hitToken === combat.attackId) continue;
+        if (!overlaps(box, e)) continue;
+        e.hitToken = combat.attackId;
+        e.hp -= desc.damage;
+        e.flashT = 0.08;
+        e.kbX = facing * desc.knock;
+        any = true;
+        if (e.hp <= 0) enemies.splice(i, 1);
+      }
+      if (any) {
+        combat.hitstop = Math.max(combat.hitstop, CONFIG.hitstopHit);
+        // #region agent log
+        fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'A',location:'index.html:resolveAttackHits',message:'hitstop applied',data:{mode:combat.mode,ultT:combat.ultT,hitstop:combat.hitstop,left:enemies.length},timestamp:Date.now()})}).catch(function(){});
+        // #endregion
+      }
+    }
+
+    function resolvePlayerHits() {
+      if (iFrameTimer > 0) return;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        // 这一刀已劈中该怪则不当帧互伤
+        if (combat.phase === 'active' && e.hitToken === combat.attackId) continue;
+        if (!overlaps(player, e)) continue;
+        hitsTaken += 1;
+        iFrameTimer = CONFIG.iFrameDuration;
+        // #region agent log
+        (function () {
+          let overlapN = 0;
+          for (let k = 0; k < enemies.length; k++) {
+            if (overlaps(player, enemies[k])) overlapN += 1;
+          }
+          fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'C',location:'index.html:resolvePlayerHits',message:'player hit',data:{hitsTaken:hitsTaken,overlapN:overlapN,playerX:player.x,kind:e.kind,iFrame:iFrameTimer},timestamp:Date.now()})}).catch(function(){});
+        })();
+        // #endregion
+        const away = (player.x + player.w * 0.5) < (e.x + e.w * 0.5) ? -1 : 1;
+        knockbackVx = away * CONFIG.knockbackX;
+        player.vy = CONFIG.knockbackY;
+        player.onGround = false;
+        if (hitsTaken >= CONFIG.playerMaxHits) resetRun(false);
+        break;
+      }
+    }
+
+    // ========== 物理：先 X 后 Y 拆开碰撞，避免撞墙侧面时被弹到墙顶 ==========
+    function update(dt) {
+      if (gameState === 'title') {
+        if (jumpPressed) {
+          jumpPressed = false;
+          slashPressed = false;
+          chargeReleased = false;
+          ultPressed = false;
+          resetRun(true);
+          gameState = 'play';
+        }
+        jumpPressed = false;
+        slashPressed = false;
+        chargeReleased = false;
+        ultPressed = false;
+        return;
+      }
+
+      if (gameState === 'win') {
+        if (jumpPressed) {
+          jumpPressed = false;
+          slashPressed = false;
+          chargeReleased = false;
+          ultPressed = false;
+          resetRun(true);
+          gameState = 'play';
+        }
+        jumpPressed = false;
+        slashPressed = false;
+        chargeReleased = false;
+        ultPressed = false;
+        return;
+      }
+
+      if (combat.hitstop > 0) {
+        // #region agent log
+        if (combat.hitstop >= CONFIG.hitstopHit - 0.002) {
+          fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'A',location:'index.html:update.hitstop',message:'sim frozen',data:{hitstop:combat.hitstop,mode:combat.mode,ultT:combat.ultT,iFrame:iFrameTimer,ultPressed:ultPressed,slashPressed:slashPressed,jumpPressed:jumpPressed},timestamp:Date.now()})}).catch(function(){});
+        }
+        // #endregion
+        combat.hitstop -= dt;
+        slashPressed = false;
+        chargeReleased = false;
+        ultPressed = false;
+        jumpPressed = false;
+        updateVfx(0);
+        updateCamera(dt);
+        return;
+      }
+
+      let dir = 0;
+      if (keys.left) dir -= 1;
+      if (keys.right) dir += 1;
+      if (dir !== 0) facing = dir;
+
+      if (jumpPressed) jumpBufferTimer = CONFIG.jumpBuffer;
+      jumpPressed = false;
+      if (jumpBufferTimer > 0) jumpBufferTimer -= dt;
+
+      tickCombat(dt);
+      slashPressed = false;
+      chargeReleased = false;
+      ultPressed = false;
+
+      if (iFrameTimer > 0) iFrameTimer -= dt;
+
+      // 用上一帧落地 / 郊狼时间起跳
+      tryJump();
+      const wasAir = !player.onGround;
+
+      const swinging = combat.phase === 'active' && (combat.mode === 'combo' || combat.mode === 'slashK');
+      const lock = swinging ? CONFIG.comboLockMove : (combat.mode === 'ult' ? 0 : 1);
+      const moveX = dir * CONFIG.moveSpeed * lock + knockbackVx;
+      player.x += moveX * dt;
+      knockbackVx += (0 - knockbackVx) * Math.min(1, CONFIG.knockbackDecay * dt);
+      if (player.x < 0) player.x = 0;
+      if (player.x + player.w > CONFIG.worldWidth) {
+        player.x = CONFIG.worldWidth - player.w;
+      }
+
+      for (let i = 0; i < platforms.length; i++) {
+        const plat = platforms[i];
+        if (!overlaps(player, plat)) continue;
+        // #region agent log
+        if (plat.y === floorY && (window.__dbgFloorWalls || 0) < 6) {
+          window.__dbgFloorWalls = (window.__dbgFloorWalls || 0) + 1;
+          fetch('http://127.0.0.1:7508/ingest/77e64260-f8f2-4147-9060-ba3795bbec36',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dc27cd'},body:JSON.stringify({sessionId:'dc27cd',runId:'pre-fix',hypothesisId:'D',location:'index.html:update.xCollide',message:'floor used as wall',data:{platX:plat.x,platW:plat.w,playerX:player.x,playerY:player.y,moveX:moveX},timestamp:Date.now()})}).catch(function(){});
+        }
+        // #endregion
+        if (moveX > 0) player.x = plat.x - player.w;
+        else if (moveX < 0) player.x = plat.x + plat.w;
+      }
+
+      player.vy += CONFIG.gravity * dt;
+      player.y += player.vy * dt;
+      player.onGround = false;
+
+      for (let i = 0; i < platforms.length; i++) {
+        const plat = platforms[i];
+        if (!overlaps(player, plat)) continue;
+        if (player.vy >= 0) {
+          player.y = plat.y - player.h;
+          player.vy = 0;
+          player.onGround = true;
+        } else {
+          player.y = plat.y + plat.h;
+          player.vy = 0;
+        }
+      }
+
+      if (wasAir && player.onGround) {
+        squash = CONFIG.squashAmount;
+        spawnDust(player.x + player.w * 0.5, player.y + player.h);
+      }
+
+      // 落地当帧若缓冲还在，立刻跳出去
+      tryJump();
+
+      if (player.onGround) coyoteTimer = CONFIG.coyoteTime;
+      else coyoteTimer -= dt;
+
+      squash += (0 - squash) * Math.min(1, CONFIG.squashRecover * dt);
+
+      updateEnemies(dt);
+      resolveAttackHits();
+      resolvePlayerHits();
+
+      for (let i = 0; i < lanterns.length; i++) {
+        const L = lanterns[i];
+        if (!L.collected && overlaps(player, L)) L.collected = true;
+      }
+
+      if (overlaps(player, goal)) {
+        gameState = 'win';
+      }
+
+      if (player.y > CONFIG.fallY) {
+        resetRun(false);
+      }
+
+      updateParticles(dt);
+      updateVfx(dt);
+      screenFx.flash = Math.max(0, screenFx.flash - dt * 8);
+      screenFx.vignette = Math.max(0, screenFx.vignette - dt * 1.1);
+      updateCamera(dt);
+    }
+
+    // ========== 绘制：不改状态，只画画 ==========
+    function drawRooftop(plat) {
+      const x = plat.x - camera.x;
+      ctx.fillStyle = PALETTE.tile;
+      ctx.fillRect(x, plat.y, plat.w, plat.h);
+      // 用夜空色刻瓦垄 / 屋脊，碰撞仍是原矩形
+      ctx.fillStyle = PALETTE.sky;
+      ctx.fillRect(x, plat.y, plat.w, 2);
+      if (plat.h > 40) {
+        for (let yy = plat.y + 16; yy < plat.y + plat.h; yy += 16) {
+          ctx.fillRect(x, yy, plat.w, 1);
+        }
+      } else {
+        for (let i = 8; i < plat.w; i += 16) {
+          ctx.fillRect(x + i, plat.y + 2, 1, Math.min(10, plat.h - 2));
+        }
+      }
+    }
+
+    function drawParallax() {
+      const shift = camera.x * CONFIG.parallax;
+      ctx.fillStyle = PALETTE.neon;
+      ctx.globalAlpha = 0.4;
+      for (let i = 0; i < farWindows.length; i++) {
+        const w = farWindows[i];
+        ctx.fillRect(w.x - shift, w.y, w.w, w.h);
+      }
+      ctx.globalAlpha = 0.7;
+      for (let i = 0; i < farSigns.length; i++) {
+        const s = farSigns[i];
+        ctx.fillRect(s.x - shift, s.y, s.w, s.h);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawLantern(L) {
+      const x = L.x - camera.x;
+      const y = L.y;
+      ctx.fillStyle = PALETTE.lantern;
+      ctx.fillRect(x + 3, y + 7, 10, 13);
+      ctx.fillRect(x + 1, y + 5, 14, 3);
+      ctx.fillStyle = PALETTE.neon;
+      ctx.fillRect(x + 7, y, 2, 6);
+    }
+
+    function drawGoal() {
+      const x = goal.x - camera.x;
+      ctx.fillStyle = PALETTE.neon;
+      ctx.fillRect(x, goal.y, goal.w, goal.h);
+      ctx.fillStyle = PALETTE.sky;
+      ctx.fillRect(x + 7, goal.y + 8, goal.w - 14, goal.h - 8);
+      ctx.fillStyle = PALETTE.neon;
+      ctx.fillRect(x + 18, goal.y + 22, 6, 18);
+      ctx.fillRect(x + 32, goal.y + 28, 4, 10);
+    }
+
+    function drawEnemy(e) {
+      const x = e.x - camera.x;
+      const y = e.y;
+      const tileDark = mixColor(PALETTE.tile, PALETTE.sky, 0.42);
+      const tileLit = mixColor(PALETTE.tile, PALETTE.neon, 0.28);
+      const furDark = mixColor(PALETTE.fur, PALETTE.sky, 0.45);
+      const lanternDim = mixColor(PALETTE.lantern, PALETTE.sky, 0.38);
+      const faceRight = e.vx >= 0;
+
+      if (e.kind === 'boss') {
+        ctx.fillStyle = mixColor(PALETTE.tile, PALETTE.sky, 0.2);
+        ctx.fillRect(x + 4, y + 10, e.w - 8, e.h - 12);
+        ctx.fillStyle = PALETTE.lantern;
+        ctx.fillRect(x + e.w * 0.5 - 8, y, 16, 14);
+        ctx.fillStyle = PALETTE.neon;
+        ctx.fillRect(x + 8, y + 18, 6, 6);
+        ctx.fillRect(x + e.w - 14, y + 18, 6, 6);
+        ctx.fillStyle = PALETTE.fur;
+        ctx.fillRect(x + (faceRight ? e.w - 18 : 4), y + 28, e.w * 0.32, 10);
+      } else if (e.kind === 'rat') {
+        ctx.fillStyle = tileDark;
+        ctx.fillRect(x + 2, y + e.h * 0.22, e.w - 4, e.h * 0.7);
+        ctx.fillStyle = PALETTE.tile;
+        ctx.fillRect(x + 4, y + e.h * 0.12, e.w - 8, e.h * 0.22);
+        ctx.fillStyle = PALETTE.fur;
+        ctx.fillRect(x + (faceRight ? e.w - e.w * 0.35 : 2), y + 2, e.w * 0.35, e.h * 0.28);
+        ctx.fillStyle = PALETTE.lantern;
+        ctx.fillRect(x + (faceRight ? e.w - 8 : 4), y + e.h * 0.14, 4, 4);
+        ctx.fillStyle = furDark;
+        ctx.fillRect(x + (faceRight ? 0 : e.w - 7), y + e.h * 0.42, 7, 4);
+      } else {
+        ctx.fillStyle = e.hp > 1 ? PALETTE.lantern : lanternDim;
+        ctx.fillRect(x + 3, y + e.h * 0.2, e.w - 6, e.h * 0.72);
+        ctx.fillRect(x + 1, y + e.h * 0.14, e.w - 2, 4);
+        ctx.fillStyle = PALETTE.neon;
+        ctx.fillRect(x + e.w * 0.5 - 1, y, 2, e.h * 0.18);
+        ctx.fillStyle = tileLit;
+        ctx.fillRect(x + e.w * 0.22, y + e.h * 0.32, 5, 7);
+      }
+
+      if (e.state === 'attack') {
+        ctx.fillStyle = PALETTE.neon;
+        ctx.fillRect(x, y - 3, e.w, 2);
+      }
+      if (e.flashT > 0) {
+        ctx.globalAlpha = 0.55;
+        ctx.fillStyle = mixColor(PALETTE.neon, '#FFFFFF', 0.5);
+        ctx.fillRect(x, y, e.w, e.h);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function fillRibbon(ox, oy, face, r0, r1, a0, a1, steps) {
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const a = a0 + (a1 - a0) * t;
+        const flare = Math.sin(t * Math.PI);
+        const rr = r0 + (r1 - r0) * (0.2 + 0.8 * flare);
+        const px = ox + Math.cos(a) * rr * face;
+        const py = oy + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      for (let i = steps; i >= 0; i--) {
+        const t = i / steps;
+        const a = a0 + (a1 - a0) * t;
+        const flare = Math.sin(t * Math.PI);
+        const inner = r0 + (r1 - r0) * 0.12 * flare;
+        ctx.lineTo(ox + Math.cos(a) * inner * face, oy + Math.sin(a) * inner);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawGhosts() {
+      for (let i = 0; i < vfx.length; i++) {
+        const v = vfx[i];
+        if (v.type !== 'ghost') continue;
+        const a = v.life / v.maxLife;
+        ctx.globalAlpha = 0.22 * a;
+        ctx.fillStyle = PALETTE.fur;
+        ctx.fillRect(v.x - camera.x, v.y, player.w, player.h);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function drawVfx() {
+      for (let i = 0; i < vfx.length; i++) {
+        const v = vfx[i];
+        if (v.type !== 'blade') continue;
+        const t = Math.max(0, v.life / v.maxLife);
+        const sx = v.ox - camera.x;
+        const sy = v.oy;
+        ctx.save();
+        ctx.globalAlpha = (v.ghost ? 0.22 : 0.7) + 0.25 * t;
+        ctx.fillStyle = PALETTE.lantern;
+        fillRibbon(sx, sy, v.facing, v.r0, v.r1, v.a0, v.a1, 12);
+        ctx.globalAlpha = (v.ghost ? 0.18 : 0.95) * t;
+        ctx.fillStyle = PALETTE.neon;
+        const mid0 = v.r0 + (v.r1 - v.r0) * 0.45;
+        const mid1 = v.r0 + (v.r1 - v.r0) * 0.88;
+        fillRibbon(sx, sy, v.facing, mid0, mid1, v.a0, v.a1, 12);
+        if (!v.ghost && t > 0.45) {
+          ctx.globalAlpha = 0.9 * ((t - 0.45) / 0.55);
+          ctx.fillStyle = mixColor(PALETTE.neon, '#FFFFFF', 0.75);
+          fillRibbon(sx, sy, v.facing, v.r1 - 2, v.r1 + 2, v.a0, v.a1, 12);
+        }
+        ctx.restore();
+      }
+    }
+
+    function drawChargePreview() {
+      if (combat.mode !== 'charging') return;
+      const p = combat.charge;
+      const h = 16 + 40 * p;
+      const ox = player.x + player.w * 0.5 + facing * 18 - camera.x;
+      const oy = player.y + player.h * 0.5;
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.5 * p;
+      ctx.fillStyle = PALETTE.neon;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy - h);
+      ctx.lineTo(ox + facing * (3 + 5 * p), oy + 6);
+      ctx.lineTo(ox - facing * 2, oy + 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawScreenFx() {
+      if (screenFx.vignette > 0.01) {
+        const g = ctx.createRadialGradient(
+          VIEW_W * 0.5, VIEW_H * 0.55, VIEW_H * 0.2,
+          VIEW_W * 0.5, VIEW_H * 0.55, VIEW_H * 0.85
+        );
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(1, 'rgba(11,16,32,' + (0.75 * screenFx.vignette) + ')');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      }
+      if (screenFx.flash > 0.01) {
+        ctx.globalAlpha = screenFx.flash;
+        ctx.fillStyle = mixColor(PALETTE.neon, '#FFFFFF', 0.7);
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function drawTanuki() {
+      const sx = 1 + squash * 0.55;
+      const sy = 1 - squash;
+      const screenX = player.x - camera.x + player.w * 0.5;
+      const feetY = player.y + player.h;
+      const w = player.w;
+
+      // 只从五色互混深浅，不另开色相
+      const mix = (hexA, hexB, t) => {
+        const a = parseInt(hexA.slice(1), 16);
+        const b = parseInt(hexB.slice(1), 16);
+        const r = Math.round((a >> 16) * (1 - t) + (b >> 16) * t);
+        const g = Math.round(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t);
+        const bl = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+        return '#' + (0x1000000 | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+      };
+      const furDark = mix(PALETTE.fur, PALETTE.sky, 0.4);
+      const furDeep = mix(PALETTE.fur, PALETTE.sky, 0.58);
+      const furWarm = mix(PALETTE.fur, PALETTE.lantern, 0.24);
+      const hatShade = mix(PALETTE.lantern, PALETTE.sky, 0.34);
+      const hatRim = mix(PALETTE.lantern, PALETTE.fur, 0.2);
+
+      const moving = keys.left || keys.right;
+      const wag = Math.sin(performance.now() * 0.006) * (moving ? 3 : 1.1);
+
+      ctx.save();
+      ctx.translate(screenX, feetY);
+      ctx.scale(facing < 0 ? -sx : sx, sy);
+
+      // 短尾：画在碰撞盒身后，跑动时略抬
+      ctx.fillStyle = furDark;
+      ctx.beginPath();
+      ctx.ellipse(-w * 0.46 + wag * 0.25, -15 - (moving ? 2 : 0), 10, 6, -0.5 + wag * 0.05, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PALETTE.fur;
+      ctx.beginPath();
+      ctx.ellipse(-w * 0.38 + wag * 0.2, -14 - (moving ? 2 : 0), 6.5, 4, -0.42, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 短腿
+      ctx.fillStyle = furDark;
+      ctx.beginPath();
+      ctx.ellipse(-5, -5, 5.2, 6.2, 0.18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(7, -4.5, 4.6, 6.4, -0.1, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 身体 + 暖色肚皮
+      ctx.fillStyle = PALETTE.fur;
+      ctx.beginPath();
+      ctx.ellipse(1, -17, 10.5, 12, 0.08, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = furWarm;
+      ctx.beginPath();
+      ctx.ellipse(4, -15, 5.5, 7, 0.12, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 圆头（偏大，小像素也认得清）
+      ctx.fillStyle = PALETTE.fur;
+      ctx.beginPath();
+      ctx.ellipse(2, -31, 12, 10.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 斗笠锥身：峰略朝面向一侧
+      ctx.fillStyle = hatShade;
+      ctx.beginPath();
+      ctx.moveTo(-17, -36);
+      ctx.lineTo(4, -53);
+      ctx.lineTo(18, -35);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = PALETTE.lantern;
+      ctx.beginPath();
+      ctx.moveTo(-15, -37);
+      ctx.lineTo(4, -52);
+      ctx.lineTo(16, -36);
+      ctx.closePath();
+      ctx.fill();
+
+      // 圆耳从帽檐两侧探出
+      ctx.fillStyle = furDark;
+      ctx.beginPath();
+      ctx.ellipse(-8, -40, 4.6, 5, -0.28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(11, -40, 4.2, 4.8, 0.22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = furWarm;
+      ctx.beginPath();
+      ctx.ellipse(-8, -39, 2.4, 2.6, -0.28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(11, -39, 2.2, 2.4, 0.22, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 灯笼橙帽檐，结打在檐上不挡脸
+      ctx.fillStyle = hatRim;
+      ctx.beginPath();
+      ctx.ellipse(1, -36, 18, 3.4, 0.05, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PALETTE.lantern;
+      ctx.beginPath();
+      ctx.ellipse(1, -35, 2.8, 2.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 短吻
+      ctx.fillStyle = furWarm;
+      ctx.beginPath();
+      ctx.ellipse(12, -28, 6.2, 4.4, 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = furDeep;
+      ctx.beginPath();
+      ctx.ellipse(16.5, -28, 2.4, 1.9, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 眼与颊上一点灯笼暖色
+      ctx.fillStyle = PALETTE.sky;
+      ctx.beginPath();
+      ctx.ellipse(5, -32, 2.8, 3.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PALETTE.neon;
+      ctx.beginPath();
+      ctx.ellipse(5.8, -33.2, 1.2, 1.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = mix(PALETTE.lantern, PALETTE.fur, 0.35);
+      ctx.beginPath();
+      ctx.ellipse(8, -27, 2.2, 1.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 帽顶一粒霓虹，当斗笠饰珠
+      ctx.fillStyle = PALETTE.neon;
+      ctx.beginPath();
+      ctx.ellipse(4, -50, 2, 1.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawOverlay() {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      if (gameState === 'title') {
+        ctx.fillStyle = PALETTE.sky;
+        ctx.globalAlpha = 0.45;
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = PALETTE.neon;
+        ctx.font = 'bold 40px sans-serif';
+        ctx.fillText('夜巷灯笼跑者', VIEW_W / 2, 190);
+        ctx.fillStyle = PALETTE.lantern;
+        ctx.font = '20px sans-serif';
+        ctx.fillText('A/D 移动，空格跳跃，J 连斩，K 蓄力，L 必杀', VIEW_W / 2, 250);
+        ctx.fillStyle = PALETTE.tile;
+        ctx.font = '16px sans-serif';
+        ctx.fillText('空格开始', VIEW_W / 2, 300);
+        return;
+      }
+
+      if (gameState === 'play') {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = PALETTE.lantern;
+        ctx.font = '16px sans-serif';
+        ctx.fillText('灯笼 ' + (lanterns.length - lanternsLeft()) + '/' + lanterns.length, 20, 28);
+        ctx.fillStyle = PALETTE.tile;
+        ctx.fillText('A/D 移动，空格跳跃，J 连斩，K 蓄力，L 必杀', 20, 50);
+        const lives = CONFIG.playerMaxHits - hitsTaken;
+        for (let i = 0; i < CONFIG.playerMaxHits; i++) {
+          ctx.fillStyle = i < lives ? PALETTE.lantern : mixColor(PALETTE.tile, PALETTE.sky, 0.35);
+          ctx.fillRect(20 + i * 18, 64, 12, 14);
+        }
+        return;
+      }
+
+      ctx.fillStyle = PALETTE.sky;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = PALETTE.neon;
+      ctx.font = 'bold 36px sans-serif';
+      ctx.fillText('巷口到了', VIEW_W / 2, 220);
+      ctx.fillStyle = PALETTE.lantern;
+      ctx.font = '18px sans-serif';
+      ctx.fillText('空格再来一次', VIEW_W / 2, 270);
+    }
+
+    function draw() {
+      ctx.fillStyle = PALETTE.sky;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+      drawParallax();
+      drawGoal();
+
+      for (let i = 0; i < platforms.length; i++) {
+        drawRooftop(platforms[i]);
+      }
+
+      for (let i = 0; i < lanterns.length; i++) {
+        if (!lanterns[i].collected) drawLantern(lanterns[i]);
+      }
+
+      for (let i = 0; i < enemies.length; i++) {
+        drawEnemy(enemies[i]);
+      }
+
+      ctx.fillStyle = PALETTE.tile;
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const a = Math.max(0, p.life / CONFIG.dustLife);
+        ctx.globalAlpha = a;
+        ctx.fillRect(p.x - camera.x, p.y, 3, 3);
+      }
+      ctx.globalAlpha = 1;
+
+      drawGhosts();
+      drawChargePreview();
+
+      if (iFrameTimer > 0) {
+        ctx.globalAlpha = Math.floor(iFrameTimer * 16) % 2 === 0 ? 1 : 0.28;
+      }
+      drawTanuki();
+      ctx.globalAlpha = 1;
+      drawVfx();
+      drawScreenFx();
+      drawOverlay();
+    }
+
+    // ========== 循环：唯一时钟，按真实流逝时间归一化 ==========
+    let lastTime = 0;
+
+    function loop(now) {
+      if (lastTime === 0) lastTime = now;
+      let dt = (now - lastTime) / 1000;
+      lastTime = now;
+      if (dt > CONFIG.maxDt) dt = CONFIG.maxDt;
+
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

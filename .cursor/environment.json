@@ -1,0 +1,16 @@
+{
+  "name": "夜巷灯笼跑者",
+  "terminals": [
+    {
+      "name": "static-server",
+      "command": "python3 -m http.server 8000",
+      "description": "Serves the static site (index.html) over HTTP on port 8000. Open http://localhost:8000/ to play the game."
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}

@@ -42,7 +42,7 @@
       jumpSpeed: -780,    // 跳跃初速（像素/秒）。y 轴向下为正所以是负值；绝对值调大跳得更高
       floorHeight: 64,    // 地板厚度（像素）。调大地板更厚、可站立区域上移
       maxDt: 1 / 30,      // 单帧时间上限（秒）。调大卡顿后会瞬移，调小极端卡顿时会感觉「慢放」
-      worldWidth: 6400,   // 关卡总宽（像素）。调大向右跑更久；调小很快到头
+      worldWidth: 9000,   // 关卡总宽（像素）。调大向右跑更久；调小很快到头
       cameraLerp: 8,      // 相机水平跟随速度。调大跟得更紧（几乎无延迟）；调小更飘、有拖影
       parallax: 0.28,     // 远景随相机移动的比例。调大视差变弱（远景跟得快）；调小视差更强（远景几乎不动）
       coyoteTime: 0.08,   // 离开平台后仍可起跳的宽限（秒）。调大边缘容错更大；调小必须踩实才跳
@@ -66,7 +66,14 @@
       monsterLungeSpeed: 240, // 扑击水平速度。调大冲得更快更狠
       monsterAttackDuration: 0.26, // 单次扑击持续时间。调大冲得更远
       monsterAttackCooldown: 0.7,  // 扑击后的收招。调大更好反击；调小会连扑
-      playerMaxHits: 3,   // 挨几下回出生点。调大更耐打
+      playerMaxHits: 10,  // 挨几下回出生点。调大更耐打；现为 10 格血
+      // —— 巨型 BOSS（kind: titan）专用：只影响泰坦，普通怪仍用上面的 monster* ——
+      titanHp: 52,              // 泰坦生命。调大更难打死；调小更快击杀
+      titanPatrolSpeed: 98,     // 泰坦巡逻速度。调大更难绕开；调小更好预判
+      titanAggroRange: 460,     // 玩家进入此距离后泰坦停止闲逛并扑击。调大更早开打
+      titanLungeSpeed: 420,     // 泰坦扑击水平速度。调大冲得更快更狠
+      titanAttackDuration: 0.48,// 单次扑击持续时间。调大冲得更远
+      titanAttackCooldown: 0.32,// 扑击后的收招。调大更好反击；调小会连扑
       knockbackX: 320,    // 受击水平击退速度。调大推得更远
       knockbackY: -340,   // 受击上弹速度。绝对值调大弹得更高
       iFrameDuration: 0.75, // 无敌时间（秒）。调大受击后更安全
@@ -186,7 +193,11 @@
       { x: 4640, y: 384, w: 140, h: 24 },
       { x: 4800, y: floorY, w: 1600, h: CONFIG.floorHeight },
       { x: 5200, y: 360, w: 180, h: 24 },
-      { x: 5600, y: 360, w: 180, h: 24 }
+      { x: 5600, y: 360, w: 180, h: 24 },
+      // 巨型 BOSS 站：接在原长台之后，地面连续、少缺口，方便绕圈周旋
+      { x: 6400, y: floorY, w: 2520, h: CONFIG.floorHeight },
+      { x: 7100, y: 368, w: 160, h: 24 },
+      { x: 7900, y: 368, w: 160, h: 24 }
     ];
 
     const lanterns = [
@@ -198,7 +209,7 @@
       { x: 3928, y: 276, w: 16, h: 22, collected: false }
     ];
 
-    const goal = { x: 6280, y: floorY - 96, w: 56, h: 96 };
+    const goal = { x: 8760, y: floorY - 96, w: 56, h: 96 };
 
     // 远景霓虹窗与招牌（世界 x，绘制时乘视差）
     const farWindows = [
@@ -218,20 +229,30 @@
       { x: 4360, y: 64, w: 8, h: 14 },
       { x: 5200, y: 66, w: 8, h: 14 },
       { x: 5480, y: 72, w: 6, h: 10 },
-      { x: 5860, y: 64, w: 9, h: 15 }
+      { x: 5860, y: 64, w: 9, h: 15 },
+      { x: 6600, y: 62, w: 10, h: 16 },
+      { x: 6640, y: 72, w: 7, h: 12 },
+      { x: 7200, y: 66, w: 8, h: 14 },
+      { x: 7480, y: 70, w: 6, h: 10 },
+      { x: 8000, y: 64, w: 9, h: 15 },
+      { x: 8320, y: 72, w: 7, h: 11 },
+      { x: 8600, y: 60, w: 8, h: 14 }
     ];
     const farSigns = [
       { x: 300, y: 48, w: 40, h: 8 },
       { x: 1240, y: 52, w: 28, h: 7 },
       { x: 2680, y: 50, w: 36, h: 8 },
-      { x: 4040, y: 54, w: 30, h: 7 }
+      { x: 4040, y: 54, w: 30, h: 7 },
+      { x: 6900, y: 48, w: 48, h: 8 },
+      { x: 8100, y: 52, w: 36, h: 7 }
     ];
 
     // 小兵与玩家碰撞盒同级；种类只靠颜色/零件区分
     const ENEMY_BODY = {
       rat: { w: 34, h: 42 },
       spirit: { w: 32, h: 44 },
-      boss: { w: 56, h: 72 }
+      boss: { w: 56, h: 72 },
+      titan: { w: 148, h: 172 }
     };
 
     // 巷鼠 / 灯笼精 / BOSS：钉在平台 y 上，只左右巡逻，不另算重力
@@ -281,6 +302,30 @@
       };
     }
 
+    // 巨型 BOSS：钉在平台上巡逻+扑击，不另算重力。体型/仇恨/扑击都比普通 boss 大一档
+    function makeTitan(platX, platY, platW, startX) {
+      const body = ENEMY_BODY.titan;
+      const w = body.w;
+      const h = body.h;
+      const inset = 40;
+      const patrolMin = platX + inset;
+      const patrolMax = Math.max(patrolMin, platX + platW - w - inset);
+      let x = startX == null ? platX + platW * 0.5 - w * 0.5 : startX;
+      if (x < patrolMin) x = patrolMin;
+      if (x > patrolMax) x = patrolMax;
+      return {
+        kind: 'titan',
+        x: x,
+        y: platY - h,
+        w: w,
+        h: h,
+        vx: CONFIG.titanPatrolSpeed,
+        patrolMin: patrolMin,
+        patrolMax: patrolMax,
+        hp: CONFIG.titanHp
+      };
+    }
+
     const enemies = [];
 
     function spawnEnemies() {
@@ -327,7 +372,12 @@
         makeEnemy('rat', 4800, floorY, 1600, 16, 5680),
         makeBoss(4800, floorY, 1600, 5820),
         makeEnemy('spirit', 4800, floorY, 1600, 16, 5960),
-        makeBoss(4800, floorY, 1600, 6100)
+        makeBoss(4800, floorY, 1600, 6100),
+        // 巨型 BOSS 站：高台上少量小兵，地面只放泰坦，避免淹没
+        makeEnemy('rat', 7100, 368, 160),
+        makeEnemy('spirit', 7100, 368, 160),
+        makeEnemy('rat', 7900, 368, 160),
+        makeTitan(6400, floorY, 2520, 7660)
       ];
       for (let i = 0; i < defs.length; i++) {
         const d = defs[i];
@@ -734,17 +784,23 @@
     function updateEnemies(dt) {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
+        const isTitan = e.kind === 'titan';
+        const aggro = isTitan ? CONFIG.titanAggroRange : CONFIG.monsterAggroRange;
+        const lunge = isTitan ? CONFIG.titanLungeSpeed : CONFIG.monsterLungeSpeed;
+        const atkDur = isTitan ? CONFIG.titanAttackDuration : CONFIG.monsterAttackDuration;
+        const atkCd = isTitan ? CONFIG.titanAttackCooldown : CONFIG.monsterAttackCooldown;
+        const patrolSpd = isTitan ? CONFIG.titanPatrolSpeed : CONFIG.monsterSpeed;
         if (e.flashT > 0) e.flashT -= dt;
-        if (e.state === 'patrol' && enemyDist(e) < CONFIG.monsterAggroRange) {
+        if (e.state === 'patrol' && enemyDist(e) < aggro) {
           e.state = 'attack';
-          e.attackTimer = CONFIG.monsterAttackDuration;
+          e.attackTimer = atkDur;
           const toward = (player.x + player.w * 0.5) < (e.x + e.w * 0.5) ? -1 : 1;
-          e.vx = toward * CONFIG.monsterLungeSpeed;
+          e.vx = toward * lunge;
         }
 
         e.x += e.vx * dt + e.kbX * dt;
         e.kbX += (0 - e.kbX) * Math.min(1, 8 * dt);
-        const slack = e.state === 'attack' ? 16 : 0;
+        const slack = e.state === 'attack' ? (isTitan ? 36 : 16) : 0;
         if (e.x < e.patrolMin - slack) {
           e.x = e.patrolMin - slack;
           e.vx = Math.abs(e.vx);
@@ -758,8 +814,8 @@
           e.attackTimer -= dt;
           if (e.attackTimer <= 0) {
             e.state = 'recover';
-            e.attackTimer = CONFIG.monsterAttackCooldown;
-            e.vx = (e.vx >= 0 ? 1 : -1) * CONFIG.monsterSpeed;
+            e.attackTimer = atkCd;
+            e.vx = (e.vx >= 0 ? 1 : -1) * patrolSpd;
           }
         } else if (e.state === 'recover') {
           e.attackTimer -= dt;
@@ -1031,7 +1087,24 @@
       const lanternDim = mixColor(PALETTE.lantern, PALETTE.sky, 0.38);
       const faceRight = e.vx >= 0;
 
-      if (e.kind === 'boss') {
+      if (e.kind === 'titan') {
+        // 巨型 BOSS：瓦色巨躯 + 灯笼橙头颅 + 霓虹青巨眼，只用五色色块
+        ctx.fillStyle = PALETTE.tile;
+        ctx.fillRect(x + 10, y + 32, e.w - 20, e.h - 36);
+        ctx.fillRect(x, y + 40, 22, 48);
+        ctx.fillRect(x + e.w - 22, y + 40, 22, 48);
+        ctx.fillStyle = PALETTE.sky;
+        ctx.fillRect(x + 22, y + 90, e.w - 44, 5);
+        ctx.fillRect(x + 22, y + 126, e.w - 44, 4);
+        ctx.fillStyle = PALETTE.lantern;
+        ctx.fillRect(x + e.w * 0.5 - 24, y + 4, 48, 38);
+        ctx.fillRect(x + e.w * 0.5 - 12, y - 8, 24, 16);
+        ctx.fillStyle = PALETTE.neon;
+        ctx.fillRect(x + 32, y + 48, 16, 14);
+        ctx.fillRect(x + e.w - 48, y + 48, 16, 14);
+        ctx.fillStyle = PALETTE.fur;
+        ctx.fillRect(x + (faceRight ? e.w - 40 : 10), y + e.h - 30, 30, 18);
+      } else if (e.kind === 'boss') {
         ctx.fillStyle = mixColor(PALETTE.tile, PALETTE.sky, 0.2);
         ctx.fillRect(x + 4, y + 10, e.w - 8, e.h - 12);
         ctx.fillStyle = PALETTE.lantern;
@@ -1064,7 +1137,8 @@
 
       if (e.state === 'attack') {
         ctx.fillStyle = PALETTE.neon;
-        ctx.fillRect(x, y - 3, e.w, 2);
+        const barH = e.kind === 'titan' ? 4 : 2;
+        ctx.fillRect(x, y - (e.kind === 'titan' ? 8 : 3), e.w, barH);
       }
       if (e.flashT > 0) {
         ctx.globalAlpha = 0.55;
@@ -1335,13 +1409,18 @@
         ctx.textAlign = 'left';
         ctx.fillStyle = PALETTE.lantern;
         ctx.font = '16px sans-serif';
-        ctx.fillText('灯笼 ' + (lanterns.length - lanternsLeft()) + '/' + lanterns.length, 20, 28);
+        ctx.fillText('灯笼 ' + (lanterns.length - lanternsLeft()) + '/' + lanterns.length, 20, 24);
         ctx.fillStyle = PALETTE.tile;
-        ctx.fillText('A/D 移动，空格跳跃，J 连斩，K 蓄力，L 必杀', 20, 50);
+        ctx.fillText('A/D 移动，空格跳跃，J 连斩，K 蓄力，L 必杀', 20, 72);
         const lives = CONFIG.playerMaxHits - hitsTaken;
+        const hpX = 20;
+        const hpY = 36;
+        const hpStride = 16;
+        const hpW = 13;
+        const hpH = 12;
         for (let i = 0; i < CONFIG.playerMaxHits; i++) {
-          ctx.fillStyle = i < lives ? PALETTE.lantern : mixColor(PALETTE.tile, PALETTE.sky, 0.35);
-          ctx.fillRect(20 + i * 18, 64, 12, 14);
+          ctx.fillStyle = i < lives ? PALETTE.lantern : PALETTE.tile;
+          ctx.fillRect(hpX + i * hpStride, hpY, hpW, hpH);
         }
         return;
       }
